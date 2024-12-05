@@ -1,175 +1,180 @@
-
 import requests
 import re
-def constructor(url):
-    # استخراج معرّف الفيديو من الرابط
-    pattern = r"(?:v=|\/)([a-zA-Z0-9_-]{11})"
-    match = re.search(pattern, url)
-    if match:
-        video_id = match.group(1)
-    else:
-        return("No ID found.")
-    url = "https://yt-api.p.rapidapi.com/dl"
-    querystring = {"id": f"{video_id}", "cgeo": "DE"}
-    headers = {
-        "x-rapidapi-key": "4c229c9dfcmsh623acf1bbb20d36p1a10e0jsnc2f890a60eb2",
-        "x-rapidapi-host": "yt-api.p.rapidapi.com"
-    }
-    response = requests.get(url, headers=headers, params=querystring).json()
-    return response
+import subprocess
+import os
+import time
 
-def get_strems(response):
-    formats_dict = {}
-    for format in response.get("adaptiveFormats", []):
-        qualityLabel = format.get("qualityLabel")
-        size = format.get("contentLength")
-        if size:
-            # تحويل الحجم إلى صيغة قابلة للقراءة
-            if int(size) > (1024 * 1024 * 1024):
-                size = f"{round(int(size) / (1024 * 1024 * 1024), 2)} GB"
-            elif int(size) > 1024 * 1024:
-                size = f"{round(int(size) / (1024 * 1024), 2)} MB"
-            elif int(size) > 1024:
-                size = f"{round(int(size) / 1024, 2)} KB"
-            # تخزين المعلومات في القاموس
-            format_info = {
-                "size": size,
-                "qualityLabel": qualityLabel if qualityLabel else "N/A",
-                "url": format["url"]
-            }
-            # إضافة البيانات إلى القاموس باستخدام qualityLabel كـ مفتاح
-            if qualityLabel:
-                formats_dict[qualityLabel] = format_info
-            else:
-                formats_dict["MP3"] = format_info
-    return formats_dict
+class YouTubeDownloader:
+    def __init__(self, api_key, api_host):
+        self.api_key = api_key
+        self.api_host = api_host
+        self.video_data = {}
 
-def get_download_link(url):
-	formats=(constructor(url)["formats"][0])
-	return (formats['url'])
+    def extract_video_id(self, url):
+        pattern = r"(?:v=|\/)([a-zA-Z0-9_-]{11})"
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+        return None
 
-def get_video_name(url):
-	formats=constructor(url)
-	return (formats['title'])
+    def fetch_video_data(self, url):
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            raise ValueError("No video ID found in the URL.")
+        
+        api_url = "https://yt-api.p.rapidapi.com/dl"
+        querystring = {"id": video_id, "cgeo": "DE"}
+        headers = {
+            "x-rapidapi-key": self.api_key,
+            "x-rapidapi-host": self.api_host
+        }
+        response = requests.get(api_url, headers=headers, params=querystring).json()
+        self.video_data = response
+        self.url = url  # حفظ URL في الخاصية
+        return response
 
-def get_video_length(url):
-    try:
-        formats = constructor(url)
-        video_length = int(formats.get('lengthSeconds', 0))
-        if video_length <= 0:
-            return "Invalid or unknown video length."
-        hours = video_length // 3600
-        minutes = (video_length % 3600) // 60
-        seconds = video_length % 60
-        if hours > 0:
-            return f"{hours:02}:{minutes:02}:{seconds:02}"  # hh:mm:ss
-        elif minutes > 0:
-            return f"{minutes:02}:{seconds:02}"  # mm:ss
+    @property
+    def get_video_name(self):
+        if not self.video_data:
+            raise ValueError("Video data has not been fetched yet.")
+        return self.video_data.get("title", "Unknown Title")
+
+    def get_streams(self):
+        formats_dict = {}
+        for format in self.video_data.get("adaptiveFormats", []):
+            quality_label = format.get("qualityLabel")
+            size = format.get("contentLength")
+            if size:
+                size = self.format_size(int(size))
+                format_info = {
+                    "size": size,
+                    "qualityLabel": quality_label if quality_label else "N/A",
+                    "url": format["url"]
+                }
+                formats_dict[quality_label or "MP3"] = format_info
+        return formats_dict
+
+    @staticmethod
+    def format_size(size):
+        if size > (1024 * 1024 * 1024):
+            return f"{round(size / (1024 * 1024 * 1024), 2)} GB"
+        elif size > 1024 * 1024:
+            return f"{round(size / (1024 * 1024), 2)} MB"
+        elif size > 1024:
+            return f"{round(size / 1024, 2)} KB"
+        return f"{size} Bytes"
+
+    def download_file(self, url, filename, save_path):
+        full_path = os.path.join(save_path, filename)
+        max_retries = 5
+        retry_count = 0
+        downloaded = False
+        while not downloaded and retry_count < max_retries:
+            try:
+                response = requests.get(url, stream=True, timeout=10)
+                response.raise_for_status()  # Raise HTTP errors if they occur
+                total_size = int(response.headers.get('content-length', 0))  # إجمالي حجم الملف إذا كان موجودًا
+                downloaded_size = 0  # لتتبع الحجم الذي تم تنزيله
+                with open(full_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=1024*1024):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_size += len(chunk)  # إضافة حجم الشريحة إلى الحجم الذي تم تنزيله
+                            # طباعة تقدم التنزيل
+                            print(f"Downloaded: {self.format_size(downloaded_size)} of {self.format_size(total_size)}", end="\r")
+                downloaded = True
+                print(f"\nFile {filename} downloaded successfully to {save_path}.")
+            except requests.exceptions.ChunkedEncodingError as e:
+                retry_count += 1
+                print(f"ChunkedEncodingError occurred: {e}. Retrying {retry_count}/{max_retries}...")
+                time.sleep(2)  # Wait before retrying
+            except requests.exceptions.RequestException as e:
+                print(f"Download failed: {e}")
+                break
+            except Exception as e:
+                print(f"An unexpected error occurred: {e}")
+                break
+
+        if not downloaded:
+            print(f"Failed to download {filename} after {max_retries} attempts.")
+
+
+
+    def merge_audio_video(self, audio_file, video_file, output_file=get_video_name, save_path=os.getcwd()):
+        try:
+            output_path = os.path.join(save_path, output_file)
+            command = [
+                "ffmpeg",
+                "-i", video_file,
+                "-i", audio_file,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-strict", "experimental",
+                output_path
+            ]
+            subprocess.run(command, check=True)
+            os.remove(video_file)
+            os.remove(audio_file)
+            print(f"Audio and video merged successfully into {output_path}")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred: {e}")
+            return False
+
+
+# الاستخدام
+if __name__ == "__main__":
+    downloader = YouTubeDownloader(
+        api_key="4c229c9dfcmsh623acf1bbb20d36p1a10e0jsnc2f890a60eb2",
+        api_host="yt-api.p.rapidapi.com"
+    )
+
+    url = input("Enter YouTube URL: ")
+    downloader.fetch_video_data(url)
+
+    save_path = input("Enter the directory to save the file (leave blank for current directory): ")
+    # if not save_path:
+    #     save_path = os.getcwd()  # المسار الحالي
+
+    print("""Choose number:
+    1- MP4
+    2- MP3
+    """)
+    choice = int(input("Enter your choice: "))
+    print("*"*50)
+    print(downloader.get_video_name)
+    print("*"*50)
+    streams = downloader.get_streams()
+
+    if choice == 2:
+        mp3_stream = streams.get("MP3")
+        if mp3_stream:
+            print(f"Audio size: {mp3_stream['size']}")
+            downloader.download_file(mp3_stream["url"], "audio.mp3", save_path)
         else:
-            return f"{seconds:02}"  # ss
-    except Exception as e:
-        return f"An error occurred: {str(e)}"
+            print("No MP3 stream found.")
+    else:
+        print("Available resolutions:")
+        for quality, info in streams.items():
+            print(f"{quality}: {info['size']}")
 
-def download_video(url, video_name="video.mp4"):
-	format = constructor(url)["formats"][0]
-	download_url = format['url']
-	response = requests.get(download_url, stream=True)
-	if response.status_code == 200:
-		with open(f"{video_name}.mp4", "wb") as f:
-			for chunk in response.iter_content(chunk_size=1024):
-				if chunk:
-					f.write(chunk)
-		print("File has been downloaded successfully.")
-	else:
-		print("Failed to download the video.")
-x=constructor("https://www.youtube.com/watch?v=4WknYA9zcNY")
-# print(get_strems(x)["720p"])
-print(get_strems(x))
-# print(x)
+        resolution = input("Choose resolution: ")
+        video_stream = streams.get(resolution)
+        if video_stream:
+            print(f"Video size: {video_stream['size']}")
+            downloader.download_file(video_stream["url"], "video.mp4", save_path)
 
-# class YouTubeVideo:
-#     def __init__(self, url):
-#         self.url = url
-#         self.api_host = "yt-api.p.rapidapi.com"
-#         self.api_url = "https://yt-api.p.rapidapi.com/dl"
-#         self.video_info = self._fetch_video_info()
+            mp3_stream = streams.get("MP3")
+            if mp3_stream:
+                downloader.download_file(mp3_stream["url"], "audio.mp3", save_path)
+                downloader.merge_audio_video(
+                    os.path.join(save_path, "audio.mp3"),
+                    os.path.join(save_path, "video.mp4"),
+                    "output.mp4",
+                    save_path
+                )
+            else:
+                print("No MP3 stream found.")
+        else:
+            print("Resolution not found.")
 
-#     def _extract_video_id(self):
-#         pattern = r"(?:v=|\/)([a-zA-Z0-9_-]{11})"
-#         match = re.search(pattern, self.url)
-#         if match:
-#             return match.group(1)
-#         else:
-#             raise ValueError("Invalid YouTube URL. No video ID found.")
-
-#     def _fetch_video_info(self):
-#         try:
-#             video_id = self._extract_video_id()
-#             querystring = {"id": video_id, "cgeo": "DE"}
-#             headers = {
-#                 "x-rapidapi-key": "4c229c9dfcmsh623acf1bbb20d36p1a10e0jsnc2f890a60eb2",
-#                 "x-rapidapi-host": self.api_host,
-#             }
-#             response = requests.get(self.api_url, headers=headers, params=querystring)
-#             if response.status_code == 200:
-#                 return response.json()
-#             else:
-#                 raise Exception(f"Failed to fetch video info. Status code: {response.status_code}")
-#         except Exception as e:
-#             raise Exception(f"An error occurred while fetching video info: {str(e)}")
-
-#     @property
-#     def video_name(self):
-#         return self.video_info.get("title", "Unknown Title")
-
-#     @property
-#     def video_length(self):
-#         try:
-#             video_length = int(self.video_info.get("lengthSeconds", 0))
-#             if video_length <= 0:
-#                 return "Invalid or unknown video length."
-#             hours = video_length // 3600
-#             minutes = (video_length % 3600) // 60
-#             seconds = video_length % 60
-#             if hours > 0:
-#                 return f"{hours:02}:{minutes:02}:{seconds:02}"  # hh:mm:ss
-#             elif minutes > 0:
-#                 return f"{minutes:02}:{seconds:02}"  # mm:ss
-#             else:
-#                 return f"{seconds:02}"  # ss
-#         except Exception as e:
-#             return f"An error occurred while calculating video length: {str(e)}"
-
-#     def get_download_link(self):
-#         if "formats" in self.video_info:
-#             return self.video_info["formats"][0]["url"]
-#         else:
-#             return "Download link not available."
-
-#     def download_video(self, video_name="video.mp4"):
-#         try:
-#             download_url = self.get_download_link()
-#             if not download_url.startswith("http"):
-#                 raise Exception("Failed to get a valid download link.")
-#             response = requests.get(download_url, stream=True)
-#             if response.status_code == 200:
-#                 with open(f"{video_name}.mp4", "wb") as f:
-#                     for chunk in response.iter_content(chunk_size=1024):
-#                         if chunk:
-#                             f.write(chunk)
-#                 print("File has been downloaded successfully.")
-#             else:
-#                 raise Exception("Failed to download the video.")
-#         except Exception as e:
-#             print(f"An error occurred while downloading the video: {str(e)}")
-
-
-# # Example Usage:0
-# video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-# # Create an instance of YouTubeVideo
-# video = YouTubeVideo(video_url)
-# # Get video details
-# print("Video Title:", video.video_name)
-# print("Video Length:", video.video_length)
-# # Download the video
-# video.download_video("my_video")
