@@ -1,3 +1,4 @@
+import shlex
 import requests
 import re
 import subprocess
@@ -76,7 +77,7 @@ class YouTubeDownloader:
                 total_size = int(response.headers.get('content-length', 0))  # إجمالي حجم الملف إذا كان موجودًا
                 downloaded_size = 0  # لتتبع الحجم الذي تم تنزيله
                 with open(full_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=1024*1024):
+                    for chunk in response.iter_content(chunk_size=1024):
                         if chunk:
                             f.write(chunk)
                             downloaded_size += len(chunk)  # إضافة حجم الشريحة إلى الحجم الذي تم تنزيله
@@ -101,80 +102,70 @@ class YouTubeDownloader:
 
 
     def merge_audio_video(self, audio_file, video_file, output_file=get_video_name, save_path=os.getcwd()):
-        try:
-            output_path = os.path.join(save_path, output_file)
-            command = [
-                "ffmpeg",
-                "-i", video_file,
-                "-i", audio_file,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-strict", "experimental",
-                output_path
-            ]
-            subprocess.run(command, check=True)
-            os.remove(video_file)
-            os.remove(audio_file)
-            print(f"Audio and video merged successfully into {output_path}")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"Error occurred: {e}")
-            return False
+        # def converter(input_video, input_audio, output_video):
+        ffmpeg_command = r'ffmpeg.exe -i "{input}" -an -vcodec copy "{output}"'.format(input=video_file, output=output_file)
+        ffmpeg_command = (fr'ffmpeg.exe -i "{video_file}" -i "{audio_file}" -c:v copy -c:a aac -strict experimental "{output_file}"')
+        process = subprocess.Popen(shlex.split(ffmpeg_command), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process.communicate()  
+        if process.returncode == 0:
+            print("Audio added to the video successfully.")
+        else:
+            print("An error occurred while adding audio to the video.")
+        os.remove(audio_file)
+        os.remove(video_file)
 
 
-# الاستخدام
-if __name__ == "__main__":
-    downloader = YouTubeDownloader(
-        api_key="4c229c9dfcmsh623acf1bbb20d36p1a10e0jsnc2f890a60eb2",
-        api_host="yt-api.p.rapidapi.com"
-    )
+downloader = YouTubeDownloader(
+    api_key="4c229c9dfcmsh623acf1bbb20d36p1a10e0jsnc2f890a60eb2",
+    api_host="yt-api.p.rapidapi.com"
+)
 
-    url = input("Enter YouTube URL: ")
-    downloader.fetch_video_data(url)
+url = input("Enter YouTube URL: ")
+downloader.fetch_video_data(url)
 
-    save_path = input("Enter the directory to save the file (leave blank for current directory): ")
-    # if not save_path:
-    #     save_path = os.getcwd()  # المسار الحالي
+save_path = input("Enter the directory to save the file (leave blank for current directory): ")
+# if not save_path:
+#     save_path = os.getcwd()  # المسار الحالي
 
-    print("""Choose number:
-    1- MP4
-    2- MP3
-    """)
-    choice = int(input("Enter your choice: "))
-    print("*"*50)
-    print(downloader.get_video_name)
-    print("*"*50)
-    streams = downloader.get_streams()
+print("""Choose number:
+1- MP4
+2- MP3
+""")
+choice = int(input("Enter your choice: "))
+print("*"*50)
+print(downloader.get_video_name)
+print("*"*50)
+streams = downloader.get_streams()
 
-    if choice == 2:
+if choice == 2:
+    mp3_stream = streams.get("MP3")
+    if mp3_stream:
+        print(f"Audio size: {mp3_stream['size']}")
+        downloader.download_file(mp3_stream["url"], "audio.mp3", save_path)
+    else:
+        print("No MP3 stream found.")
+else:
+    print("Available resolutions:")
+    for quality, info in streams.items():
+        print(f"{quality}: {info['size']}")
+
+    resolution = input("Choose resolution: ")
+    video_stream = streams.get(resolution)
+    if video_stream:
+        print(f"Video size: {video_stream['size']}")
+        downloader.download_file(video_stream["url"], "video.mp4", save_path)
+
         mp3_stream = streams.get("MP3")
         if mp3_stream:
-            print(f"Audio size: {mp3_stream['size']}")
             downloader.download_file(mp3_stream["url"], "audio.mp3", save_path)
+            downloader.merge_audio_video(
+                os.path.join(save_path, "audio.mp3"),
+                os.path.join(save_path, "video.mp4"),
+                "output.mp4",
+                save_path
+            )
         else:
             print("No MP3 stream found.")
     else:
-        print("Available resolutions:")
-        for quality, info in streams.items():
-            print(f"{quality}: {info['size']}")
-
-        resolution = input("Choose resolution: ")
-        video_stream = streams.get(resolution)
-        if video_stream:
-            print(f"Video size: {video_stream['size']}")
-            downloader.download_file(video_stream["url"], "video.mp4", save_path)
-
-            mp3_stream = streams.get("MP3")
-            if mp3_stream:
-                downloader.download_file(mp3_stream["url"], "audio.mp3", save_path)
-                downloader.merge_audio_video(
-                    os.path.join(save_path, "audio.mp3"),
-                    os.path.join(save_path, "video.mp4"),
-                    "output.mp4",
-                    save_path
-                )
-            else:
-                print("No MP3 stream found.")
-        else:
-            print("Resolution not found.")
+        print("Resolution not found.")
 
